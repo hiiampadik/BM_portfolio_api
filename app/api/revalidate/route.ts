@@ -13,14 +13,14 @@ interface SanityPayload {
 
 interface RevalidationResult {
   success: boolean;
-  revalidatedTags?: string[];
+  revalidatedPaths?: string[];
   error?: string;
 }
 
 interface ApiResponse {
   success: boolean;
   message: string;
-  revalidatedTags?: string[];
+  revalidatedPaths?: string[];
   error?: string;
 }
 
@@ -36,36 +36,36 @@ function getEnvConfig() {
 }
 
 // =============================================================================
-// Tag Mapping
+// Path Mapping
 // =============================================================================
 
 /**
- * Maps Sanity document type and payload to tags that need revalidation.
+ * Maps Sanity document type and payload to paths that need revalidation.
  * Returns null if the type is not recognized.
  */
-function getTagsToRevalidate(payload: SanityPayload): string[] | null {
+function getPathsToRevalidate(payload: SanityPayload): string[] | null {
   const { _type, slug } = payload;
 
   switch (_type) {
     case "projects": {
-      const tags = ["projects"];
+      const paths = ["", "/projects"];
       if (slug) {
-        tags.push(`project-${slug}`);
+        paths.push(`/projects/${slug}`);
       }
-      return tags;
+      return paths;
     }
 
     case "about":
-      return ["about"];
+      return ["", "/about"];
 
     case "home":
-      return ["home"];
+      return [""];
 
     case "settings":
-      return ["settings"];
+      return [""];
 
     case "contact":
-      return ["contact"];
+      return ["", "/contact"];
 
     default:
       return null;
@@ -104,10 +104,10 @@ function parseAndValidatePayload(body: unknown): SanityPayload | null {
 // =============================================================================
 
 /**
- * Calls the main site's revalidation endpoint with tags.
+ * Calls the main site's revalidation endpoint with paths.
  */
-async function revalidateTags(
-  tags: string[],
+async function revalidatePaths(
+  paths: string[],
   revalidateUrl: string,
   secret: string
 ): Promise<RevalidationResult> {
@@ -118,7 +118,7 @@ async function revalidateTags(
         "Content-Type": "application/json",
         Authorization: `Bearer ${secret}`,
       },
-      body: JSON.stringify({ tags }),
+      body: JSON.stringify({ paths }),
     });
 
     if (!response.ok) {
@@ -132,7 +132,7 @@ async function revalidateTags(
     const result = await response.json();
     return {
       success: true,
-      revalidatedTags: result.revalidatedTags ?? tags,
+      revalidatedPaths: result.revalidatedPaths ?? paths,
     };
   } catch (error) {
     const errorMessage =
@@ -207,18 +207,18 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       `[${requestId}] Processing revalidation for type: ${payload._type}, slug: ${payload.slug ?? "N/A"}`
     );
 
-    // Get tags to revalidate
-    const tags = getTagsToRevalidate(payload);
-    if (!tags) {
+    // Get paths to revalidate
+    const paths = getPathsToRevalidate(payload);
+    if (!paths) {
       console.info(`[${requestId}] Unknown document type: ${payload._type}`);
       return errorResponse(`Unknown document type: ${payload._type}`, 400);
     }
 
-    console.info(`[${requestId}] Revalidating tags: ${tags.join(", ")}`);
+    console.info(`[${requestId}] Revalidating paths: ${paths.join(", ")}`);
 
-    // Revalidate tags on main site
-    const result = await revalidateTags(
-      tags,
+    // Revalidate paths on main site
+    const result = await revalidatePaths(
+      paths,
       config.mainSiteRevalidateUrl,
       config.apiGatewaySecret
     );
@@ -236,14 +236,14 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     }
 
     console.info(
-      `[${requestId}] Successfully revalidated tags: ${result.revalidatedTags?.join(", ")}`
+      `[${requestId}] Successfully revalidated paths: ${result.revalidatedPaths?.join(", ")}`
     );
 
     return jsonResponse(
       {
         success: true,
-        message: `Successfully revalidated ${tags.length} tag(s)`,
-        revalidatedTags: result.revalidatedTags,
+        message: `Successfully revalidated ${paths.length} path(s)`,
+        revalidatedPaths: result.revalidatedPaths,
       },
       200
     );
