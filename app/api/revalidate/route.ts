@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { isValidSignature, SIGNATURE_HEADER_NAME } from "@sanity/webhook";
 
 // =============================================================================
 // Types
@@ -173,17 +174,20 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       return errorResponse("Server configuration error", 200);
     }
 
-    // Validate secret from Sanity webhook signature header
-    const signature = request.headers.get("sanity-webhook-signature");
-    if (signature !== config.apiGatewaySecret) {
-      console.info(`[${requestId}] Unauthorized request`);
-      return errorResponse("Unauthorized", 401);
+    // Get raw body for signature validation
+    const rawBody = await request.text();
+
+    // Validate Sanity webhook signature
+    const signature = request.headers.get(SIGNATURE_HEADER_NAME);
+    if (!signature || !isValidSignature(rawBody, signature, config.apiGatewaySecret)) {
+      console.info(`[${requestId}] Invalid signature`);
+      return errorResponse("Invalid signature", 401);
     }
 
     // Parse request body
     let body: unknown;
     try {
-      body = await request.json();
+      body = JSON.parse(rawBody);
     } catch {
       console.info(`[${requestId}] Invalid JSON body`);
       return errorResponse("Invalid JSON body", 400);
