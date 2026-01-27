@@ -131,7 +131,6 @@ async function revalidateTags(
   secret: string
 ): Promise<RevalidationResult> {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
 
   try {
     const response = await fetch(revalidateUrl, {
@@ -144,7 +143,6 @@ async function revalidateTags(
       signal: controller.signal,
     });
 
-    clearTimeout(timeoutId);
 
     if (!response.ok) {
       const errorText = await response.text().catch(() => "Unknown error");
@@ -160,7 +158,6 @@ async function revalidateTags(
       revalidatedTags: result.revalidatedTags ?? tags,
     };
   } catch (error) {
-    clearTimeout(timeoutId);
 
     const errorMessage =
       error instanceof Error
