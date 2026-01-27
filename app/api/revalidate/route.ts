@@ -48,7 +48,7 @@ function getPathsToRevalidate(payload: SanityPayload): string[] | null {
 
   switch (_type) {
     case "projects": {
-      const paths = ["", "/projects"];
+      const paths = [""];
       if (slug) {
         paths.push(`/projects/${slug}`);
       }
@@ -56,16 +56,10 @@ function getPathsToRevalidate(payload: SanityPayload): string[] | null {
     }
 
     case "about":
-      return ["", "/about"];
+      return [""];
 
     case "home":
       return [""];
-
-    case "settings":
-      return [""];
-
-    case "contact":
-      return ["", "/contact"];
 
     default:
       return null;
