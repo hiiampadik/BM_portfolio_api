@@ -199,7 +199,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     // Validate environment variables
     if (!config.apiGatewaySecret || !config.mainSiteRevalidateUrl) {
       console.error(`[${requestId}] Missing required environment variables`);
-      return errorResponse("Server configuration error", 500);
+      return errorResponse("Server configuration error", 200);
     }
 
     // Validate Content-Type
@@ -268,7 +268,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
           message: "Revalidation failed",
           error: result.error,
         },
-        502
+        200
       );
     }
 
@@ -286,7 +286,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     );
   } catch (error) {
     console.error(`[${requestId}] Unexpected error:`, error);
-    return errorResponse("Internal server error", 500);
+    return errorResponse("Internal server error", 200);
   }
 }
 
