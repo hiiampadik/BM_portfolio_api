@@ -30,7 +30,7 @@ interface ApiResponse {
 function getEnvConfig() {
   return {
     apiGatewaySecret: process.env.API_GATEWAY_SECRET,
-    mainSiteRevalidateUrl: process.env.MAIN_SITE_REVALIDATE_URL, // e.g., https://bronislavmusil.com/api/revalidate
+    mainSiteRevalidateUrl: process.env.MAIN_SITE_REVALIDATE_URL,
   };
 }
 
@@ -76,26 +76,6 @@ function getTagsToRevalidate(payload: SanityPayload): string[] | null {
 // =============================================================================
 
 /**
- * Validates the Authorization header against API_GATEWAY_SECRET.
- */
-function validateAuthorization(
-  authHeader: string | null,
-  secret: string
-): boolean {
-  if (!authHeader) return false;
-  const [scheme, token] = authHeader.split(" ");
-  return scheme === "Bearer" && token === secret;
-}
-
-/**
- * Validates the Content-Type header is application/json.
- */
-function validateContentType(contentType: string | null): boolean {
-  if (!contentType) return false;
-  return contentType.includes("application/json");
-}
-
-/**
  * Safely parses and validates the Sanity webhook payload.
  */
 function parseAndValidatePayload(body: unknown): SanityPayload | null {
@@ -130,8 +110,6 @@ async function revalidateTags(
   revalidateUrl: string,
   secret: string
 ): Promise<RevalidationResult> {
-  const controller = new AbortController();
-
   try {
     const response = await fetch(revalidateUrl, {
       method: "POST",
@@ -140,9 +118,7 @@ async function revalidateTags(
         Authorization: `Bearer ${secret}`,
       },
       body: JSON.stringify({ tags }),
-      signal: controller.signal,
     });
-
 
     if (!response.ok) {
       const errorText = await response.text().catch(() => "Unknown error");
@@ -158,13 +134,8 @@ async function revalidateTags(
       revalidatedTags: result.revalidatedTags ?? tags,
     };
   } catch (error) {
-
     const errorMessage =
-      error instanceof Error
-        ? error.name === "AbortError"
-          ? "Request timeout (10s)"
-          : error.message
-        : "Unknown error";
+      error instanceof Error ? error.message : "Unknown error";
 
     return {
       success: false,
@@ -202,19 +173,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       return errorResponse("Server configuration error", 200);
     }
 
-    // Validate Content-Type
-    const contentType = request.headers.get("content-type");
-    if (!validateContentType(contentType)) {
-      console.info(`[${requestId}] Invalid Content-Type: ${contentType}`);
-      return errorResponse(
-        "Unsupported Media Type. Expected application/json",
-        415
-      );
-    }
-
-    // Validate Authorization
-    const authHeader = request.headers.get("authorization");
-    if (!validateAuthorization(authHeader, config.apiGatewaySecret)) {
+    // Validate secret from Sanity webhook signature header
+    const signature = request.headers.get("sanity-webhook-signature");
+    if (signature !== config.apiGatewaySecret) {
       console.info(`[${requestId}] Unauthorized request`);
       return errorResponse("Unauthorized", 401);
     }
@@ -249,9 +210,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       return errorResponse(`Unknown document type: ${payload._type}`, 400);
     }
 
-    console.info(
-      `[${requestId}] Revalidating tags: ${tags.join(", ")}`
-    );
+    console.info(`[${requestId}] Revalidating tags: ${tags.join(", ")}`);
 
     // Revalidate tags on main site
     const result = await revalidateTags(
