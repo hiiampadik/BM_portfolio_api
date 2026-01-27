@@ -6,24 +6,21 @@ import { NextRequest, NextResponse } from "next/server";
 
 interface SanityPayload {
   _type: string;
-  slug?: {
-    current?: string;
-  };
+  slug?: string;
   [key: string]: unknown;
 }
 
 interface RevalidationResult {
-  path: string;
-  ok: boolean;
-  status?: number;
+  success: boolean;
+  revalidatedTags?: string[];
   error?: string;
 }
 
 interface ApiResponse {
   success: boolean;
   message: string;
-  results?: RevalidationResult[];
-  revalidatedPaths?: string[];
+  revalidatedTags?: string[];
+  error?: string;
 }
 
 // =============================================================================
@@ -33,54 +30,41 @@ interface ApiResponse {
 function getEnvConfig() {
   return {
     apiGatewaySecret: process.env.API_GATEWAY_SECRET,
-    mainSiteUrl: process.env.MAIN_SITE_URL,
-    mainRevalidateEndpoint: process.env.MAIN_REVALIDATE_ENDPOINT,
-    mainRevalidateSecret: process.env.MAIN_REVALIDATE_SECRET,
+    mainSiteRevalidateUrl: process.env.MAIN_SITE_REVALIDATE_URL, // e.g., https://bronislavmusil.com/api/revalidate
   };
 }
 
 // =============================================================================
-// Path Mapping
+// Tag Mapping
 // =============================================================================
 
 /**
- * Maps Sanity document type and payload to paths that need revalidation.
+ * Maps Sanity document type and payload to tags that need revalidation.
  * Returns null if the type is not recognized.
  */
-function getPathsToRevalidate(payload: SanityPayload): string[] | null {
+function getTagsToRevalidate(payload: SanityPayload): string[] | null {
   const { _type, slug } = payload;
-  const slugValue = slug?.current;
 
   switch (_type) {
-    case "exhibitions": {
-      const paths = ["/cs/exhibitions", "/en/exhibitions", "/cs", "/en"];
-      if (slugValue) {
-        paths.unshift(
-          `/exhibition/${slugValue}`,
-          `/cs/exhibition/${slugValue}`,
-          `/en/exhibition/${slugValue}`
-        );
+    case "projects": {
+      const tags = ["projects"];
+      if (slug) {
+        tags.push(`project-${slug}`);
       }
-      return paths;
+      return tags;
     }
-
-    case "pages": {
-      const paths = ["/cs", "/en"];
-      if (slugValue) {
-        paths.unshift(`/${slugValue}`, `/cs/${slugValue}`, `/en/${slugValue}`);
-      }
-      return paths;
-    }
-
-    case "home":
-    case "settings":
-      return ["/", "/cs", "/en"];
 
     case "about":
-      return ["/about", "/cs/about", "/en/about", "/cs", "/en"];
+      return ["about"];
+
+    case "home":
+      return ["home"];
+
+    case "settings":
+      return ["settings"];
 
     case "contact":
-      return ["/contact", "/cs/contact", "/en/contact", "/cs", "/en"];
+      return ["contact"];
 
     default:
       return null;
@@ -112,27 +96,6 @@ function validateContentType(contentType: string | null): boolean {
 }
 
 /**
- * Validates the timestamp for anti-replay protection.
- * Returns true if timestamp is within ±5 minutes or if not provided.
- */
-function validateTimestamp(timestampHeader: string | null): boolean {
-  if (!timestampHeader) {
-    // If not provided, we allow the request (as per requirements)
-    return true;
-  }
-
-  const timestamp = parseInt(timestampHeader, 10);
-  if (isNaN(timestamp)) {
-    return false;
-  }
-
-  const now = Date.now();
-  const fiveMinutesMs = 5 * 60 * 1000;
-
-  return Math.abs(now - timestamp) <= fiveMinutesMs;
-}
-
-/**
  * Safely parses and validates the Sanity webhook payload.
  */
 function parseAndValidatePayload(body: unknown): SanityPayload | null {
@@ -147,18 +110,9 @@ function parseAndValidatePayload(body: unknown): SanityPayload | null {
     return null;
   }
 
-  // slug is optional, but if present must have correct structure
-  if (obj.slug !== undefined) {
-    if (typeof obj.slug !== "object" || obj.slug === null) {
-      return null;
-    }
-    const slugObj = obj.slug as Record<string, unknown>;
-    if (
-      slugObj.current !== undefined &&
-      typeof slugObj.current !== "string"
-    ) {
-      return null;
-    }
+  // slug is optional, but if present must be a string
+  if (obj.slug !== undefined && typeof obj.slug !== "string") {
+    return null;
   }
 
   return obj as SanityPayload;
@@ -169,35 +123,41 @@ function parseAndValidatePayload(body: unknown): SanityPayload | null {
 // =============================================================================
 
 /**
- * Calls the main site's revalidation endpoint for a single path.
+ * Calls the main site's revalidation endpoint with tags.
  */
-async function revalidatePath(
-  path: string,
-  baseUrl: string,
-  endpoint: string,
+async function revalidateTags(
+  tags: string[],
+  revalidateUrl: string,
   secret: string
 ): Promise<RevalidationResult> {
-  const url = `${baseUrl}${endpoint}`;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
 
   try {
-    const response = await fetch(url, {
+    const response = await fetch(revalidateUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${secret}`,
       },
-      body: JSON.stringify({ path }),
+      body: JSON.stringify({ tags }),
       signal: controller.signal,
     });
 
     clearTimeout(timeoutId);
 
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => "Unknown error");
+      return {
+        success: false,
+        error: `Main site returned ${response.status}: ${errorText}`,
+      };
+    }
+
+    const result = await response.json();
     return {
-      path,
-      ok: response.ok,
-      status: response.status,
+      success: true,
+      revalidatedTags: result.revalidatedTags ?? tags,
     };
   } catch (error) {
     clearTimeout(timeoutId);
@@ -210,27 +170,10 @@ async function revalidatePath(
         : "Unknown error";
 
     return {
-      path,
-      ok: false,
+      success: false,
       error: errorMessage,
     };
   }
-}
-
-/**
- * Revalidates all paths and returns results.
- */
-async function revalidateAllPaths(
-  paths: string[],
-  baseUrl: string,
-  endpoint: string,
-  secret: string
-): Promise<RevalidationResult[]> {
-  const results = await Promise.all(
-    paths.map((path) => revalidatePath(path, baseUrl, endpoint, secret))
-  );
-
-  return results;
 }
 
 // =============================================================================
@@ -257,12 +200,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const config = getEnvConfig();
 
     // Validate environment variables
-    if (
-      !config.apiGatewaySecret ||
-      !config.mainSiteUrl ||
-      !config.mainRevalidateEndpoint ||
-      !config.mainRevalidateSecret
-    ) {
+    if (!config.apiGatewaySecret || !config.mainSiteRevalidateUrl) {
       console.error(`[${requestId}] Missing required environment variables`);
       return errorResponse("Server configuration error", 500);
     }
@@ -284,18 +222,6 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       return errorResponse("Unauthorized", 401);
     }
 
-    // Validate Timestamp (anti-replay)
-    const timestampHeader = request.headers.get("x-request-timestamp");
-    if (!validateTimestamp(timestampHeader)) {
-      console.info(
-        `[${requestId}] Invalid timestamp: ${timestampHeader}`
-      );
-      return errorResponse(
-        "Invalid or expired timestamp. Must be within ±5 minutes.",
-        400
-      );
-    }
-
     // Parse request body
     let body: unknown;
     try {
@@ -310,77 +236,56 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     if (!payload) {
       console.info(`[${requestId}] Invalid payload structure`);
       return errorResponse(
-        "Invalid payload. Required: _type (string). Optional: slug.current (string)",
+        "Invalid payload. Required: _type (string). Optional: slug (string)",
         400
       );
     }
 
     console.info(
-      `[${requestId}] Processing revalidation for type: ${payload._type}, slug: ${payload.slug?.current ?? "N/A"}`
+      `[${requestId}] Processing revalidation for type: ${payload._type}, slug: ${payload.slug ?? "N/A"}`
     );
 
-    // Get paths to revalidate
-    const paths = getPathsToRevalidate(payload);
-    if (!paths) {
+    // Get tags to revalidate
+    const tags = getTagsToRevalidate(payload);
+    if (!tags) {
       console.info(`[${requestId}] Unknown document type: ${payload._type}`);
-      return errorResponse(
-        `Unknown document type: ${payload._type}`,
-        400
-      );
+      return errorResponse(`Unknown document type: ${payload._type}`, 400);
     }
 
     console.info(
-      `[${requestId}] Revalidating ${paths.length} paths: ${paths.join(", ")}`
+      `[${requestId}] Revalidating tags: ${tags.join(", ")}`
     );
 
-    // Revalidate all paths
-    const results = await revalidateAllPaths(
-      paths,
-      config.mainSiteUrl,
-      config.mainRevalidateEndpoint,
-      config.mainRevalidateSecret
+    // Revalidate tags on main site
+    const result = await revalidateTags(
+      tags,
+      config.mainSiteRevalidateUrl,
+      config.apiGatewaySecret
     );
 
-    // Analyze results
-    const successfulPaths = results.filter((r) => r.ok);
-    const failedPaths = results.filter((r) => !r.ok);
-
-    // Log results
-    if (failedPaths.length > 0) {
-      console.error(
-        `[${requestId}] Partial failure. Success: ${successfulPaths.length}, Failed: ${failedPaths.length}`
-      );
-      failedPaths.forEach((r) => {
-        console.error(
-          `[${requestId}] Failed: ${r.path} - ${r.error ?? `status ${r.status}`}`
-        );
-      });
-    } else {
-      console.info(
-        `[${requestId}] All ${results.length} paths revalidated successfully`
-      );
-    }
-
-    // Return appropriate response
-    if (failedPaths.length === 0) {
+    if (!result.success) {
+      console.error(`[${requestId}] Revalidation failed: ${result.error}`);
       return jsonResponse(
         {
-          success: true,
-          message: `Successfully revalidated ${results.length} paths`,
-          revalidatedPaths: paths,
+          success: false,
+          message: "Revalidation failed",
+          error: result.error,
         },
-        200
+        502
       );
     }
 
-    // Partial failure - return 207 Multi-Status
+    console.info(
+      `[${requestId}] Successfully revalidated tags: ${result.revalidatedTags?.join(", ")}`
+    );
+
     return jsonResponse(
       {
-        success: false,
-        message: `Partial failure: ${successfulPaths.length}/${results.length} paths revalidated`,
-        results,
+        success: true,
+        message: `Successfully revalidated ${tags.length} tag(s)`,
+        revalidatedTags: result.revalidatedTags,
       },
-      207
+      200
     );
   } catch (error) {
     console.error(`[${requestId}] Unexpected error:`, error);
